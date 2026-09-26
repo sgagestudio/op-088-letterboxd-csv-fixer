@@ -10,6 +10,16 @@ const SAFE_KEYS = new Set([
   'ambiguous_count','data_loss_flag','source_type'
 ]);
 
+const DB_KEYS = new Set([
+  'source_type','input_size_bucket','status_code','warning_count','row_count_bucket',
+  'ambiguous_count','data_loss_flag','elapsed_bucket','download_clicked','error_code'
+]);
+
+export const SUPABASE_ANALYTICS = Object.freeze({
+  url: 'https://tiqhrgwibjvcbjxhutba.supabase.co',
+  publishableKey: 'sb_publishable_QlzGLnUevNmTDB0HwUGmRA_Yx7cA4VS'
+});
+
 export function sanitizeProperties(input = {}) {
   const out = {};
   for (const [key, value] of Object.entries(input || {})) {
@@ -27,28 +37,83 @@ export function sizeBucket(length = 0) {
   return 'gte_100k';
 }
 
-export function createAnalytics({ storage = globalThis.localStorage, now = () => new Date().toISOString() } = {}) {
+function safeUuid(uuid = () => globalThis.crypto?.randomUUID?.()) {
+  return uuid?.() || '00000000-0000-4000-8000-000000000000';
+}
+
+export function createSupabaseTransport({
+  fetcher = globalThis.fetch?.bind(globalThis),
+  endpoint = SUPABASE_ANALYTICS.url,
+  publishableKey = SUPABASE_ANALYTICS.publishableKey
+} = {}) {
+  if (!fetcher) return null;
+  return async (event) => {
+    const body = {
+      client_ts: event.ts,
+      session_id: event.session_id,
+      product_id: 'OP-088',
+      event_version: 1,
+      event_name: event.name
+    };
+    for (const [key, value] of Object.entries(event.properties || {})) {
+      if (DB_KEYS.has(key)) body[key] = value;
+    }
+    const response = await fetcher(`${endpoint}/rest/v1/market_events`, {
+      method: 'POST',
+      headers: {
+        apikey: publishableKey,
+        'content-type': 'application/json',
+        Prefer: 'return=minimal'
+      },
+      body: JSON.stringify(body),
+      keepalive: true
+    });
+    if (!response.ok) throw new Error(`analytics_transport_http_${response.status}`);
+    return true;
+  };
+}
+
+export function createAnalytics({
+  storage = globalThis.localStorage,
+  sessionStorage = globalThis.sessionStorage,
+  now = () => new Date().toISOString(),
+  uuid = () => globalThis.crypto?.randomUUID?.(),
+  transport = null
+} = {}) {
   const events = [];
+  let sessionId;
+  try {
+    const key = 'op088_market_session_id';
+    sessionId = sessionStorage?.getItem(key) || safeUuid(uuid);
+    if (!sessionStorage?.getItem(key)) sessionStorage?.setItem(key, sessionId);
+  } catch {
+    sessionId = safeUuid(uuid);
+  }
+
   function track(name, properties = {}) {
     if (!ALLOWED_EVENTS.has(name)) throw new Error(`analytics_event_not_allowed:${name}`);
     const event = {
       name,
       ts: now(),
+      session_id: sessionId,
       properties: sanitizeProperties({ product_id: 'OP-088', event_version: 1, ...properties })
     };
     events.push(event);
     globalThis.dispatchEvent?.(new CustomEvent('op088:analytics', { detail: event }));
+    if (transport) Promise.resolve(transport(event)).catch(() => {});
     return event;
   }
+
   function markLanding() {
     track('landing_view');
     try {
-      const key = 'op088_seen_private_landing';
+      const key = 'op088_seen_public_landing';
       if (storage?.getItem(key)) track('return_visit');
       else storage?.setItem(key, '1');
     } catch {}
   }
-  return { track, markLanding, events };
+
+  return { track, markLanding, events, sessionId };
 }
 
-export const analytics = createAnalytics();
+export const analytics = createAnalytics({ transport: createSupabaseTransport() });
