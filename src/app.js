@@ -1,7 +1,7 @@
 import { transformCsv, fixtures } from './transformer.js';
 import { analytics, sizeBucket } from './analytics.js';
 
-const state = { text: fixtures[0].csv, filename: 'ratings.csv', report: null, started: false };
+const state = { text: '', filename: 'ratings.csv', report: null, started: false, treatDateRatedAsWatchedDate: false };
 const app = document.querySelector('#app');
 analytics.markLanding();
 render();
@@ -26,14 +26,14 @@ function runTransform(sourceType = 'paste') {
   analytics.track('analysis_started', { source_type: sourceType });
   const startedAt = performance.now();
   try {
-    state.report = transformCsv(state.text, { filename: state.filename });
+    state.report = transformCsv(state.text, { filename: state.filename, treatDateRatedAsWatchedDate: state.treatDateRatedAsWatchedDate });
     const elapsed = performance.now() - startedAt;
     const common = {
       status_code: state.report.status,
       warning_count: state.report.warnings?.length ?? 0,
       row_count_bucket: sizeBucket(state.report.rowCount ?? 0),
       ambiguous_count: state.report.warnings?.filter?.(w => String(w.code || '').includes('ambiguous'))?.length ?? 0,
-      data_loss_flag: (state.report.dataLossCases ?? 0) > 0,
+      data_loss_flag: (state.report.semanticDataLoss ?? 0) > 0,
       elapsed_bucket: elapsed < 50 ? 'lt_50ms' : elapsed < 250 ? '50_250ms' : 'gte_250ms',
       source_type: sourceType
     };
@@ -72,16 +72,16 @@ function render() {
       <h2>See exactly what changes before you download.</h2>
       <div class="example-grid">
         <div><h3>IMDb-style input</h3><pre>Const,Your Rating,Date Rated,Title,Year\ntt1375666,8,2024-01-02,Inception,2010</pre></div>
-        <div><h3>Letterboxd-compatible output</h3><pre>Title,Year,imdbID,Rating10,WatchedDate,Tags\nInception,2010,tt1375666,8,2024-01-02,</pre></div>
+        <div><h3>Letterboxd-compatible output</h3><pre>Title,Year,imdbID,Rating10\nInception,2010,tt1375666,8</pre></div>
       </div>
-      <p class="muted">Synthetic example only. Ambiguous date formats are not silently rewritten.</p>
+      <p class="muted">Synthetic example only. IMDb Date Rated is not used as WatchedDate unless you explicitly opt in.</p>
     </section>
 
     <section id="tool" class="grid">
       <div class="panel">
         <h2>Preflight / fix CSV</h2>
         <label>Open CSV <input id="file" type="file" accept=".csv,.txt,.html"></label>
-        <textarea id="input" spellcheck="false" aria-label="CSV input"></textarea>
+        <textarea id="input" spellcheck="false" aria-label="CSV input" placeholder="Paste CSV here or choose a file"></textarea>\n        <label class="date-option"><input id="date-rated-option" type="checkbox"> Treat IMDb Date Rated as the watched date</label>\n        <p class="muted">Off by default. IMDb activity/rating date may not be the date you actually watched the film.</p>
         <div class="actions">
           <button class="primary" id="transform">Analyze and fix</button>
           <button id="clear">Clear</button>
@@ -103,7 +103,9 @@ function render() {
     <section class="privacy panel-copy">
       <p class="eyebrow">Privacy</p>
       <h2>Your CSV stays on your device.</h2>
-      <p>The transformation runs in the browser. The analytics design is limited to coarse usage events and must never include CSV content, movie titles, IMDb IDs, watched dates or filenames.</p>
+      <p><strong>Product data:</strong> CSV content is processed locally in your browser and is not uploaded.</p>
+      <p><strong>Analytics:</strong> we send coarse usage events to Supabase solely to measure whether this experiment is useful (for example: page loaded, analysis completed, download). Events do not include CSV content, movie titles, IMDb IDs, watched dates, filenames or free-text input. A random session identifier exists only in memory for the current page load; no persistent analytics identifier is stored on your device. Analytics events are retained for up to 30 days.</p>
+      <p><strong>Operator/contact:</strong> sgagestudio · <a href="https://github.com/sgagestudio" rel="noreferrer">GitHub profile</a>.</p>
     </section>
 
     <section class="faq panel-copy">
@@ -111,7 +113,7 @@ function render() {
       <h2>Before you import</h2>
       <details><summary>Does this import data into Letterboxd?</summary><p>No. It prepares a CSV for you to review and then import using Letterboxd’s official importer.</p></details>
       <details><summary>Will it change ambiguous dates automatically?</summary><p>No. Only deterministic date conversions are applied. Ambiguous values are preserved and marked for review.</p></details>
-      <details><summary>Does it upload my CSV?</summary><p>No. The current tool processes the CSV locally in the browser.</p></details>
+      <details><summary>Does it upload my CSV?</summary><p>No. The tool processes CSV content locally in the browser. Only coarse usage analytics are sent to Supabase; CSV content is not uploaded.</p></details>
       <details><summary>What if Letterboxd still cannot match a film?</summary><p>This tool does not perform movie matching or metadata enrichment. Use Letterboxd’s import preview to review title matches.</p></details>
       <details><summary>Is this affiliated with Letterboxd or IMDb?</summary><p>No. It is an independent preflight/fixer utility.</p></details>
     </section>
@@ -129,6 +131,9 @@ function render() {
 
 function bind() {
   document.querySelector('#input').addEventListener('focus', () => markStarted('paste'));
+  const dateOption = document.querySelector('#date-rated-option');
+  dateOption.checked = state.treatDateRatedAsWatchedDate;
+  dateOption.addEventListener('change', e => { state.treatDateRatedAsWatchedDate = e.target.checked; state.report = null; });
   document.querySelector('#input').addEventListener('input', e => { state.text = e.target.value; });
   document.querySelector('#file').addEventListener('change', async e => {
     const file = e.target.files?.[0];
@@ -164,6 +169,7 @@ function bind() {
     const fixture = fixtures.find(f => f.id === btn.dataset.fixture);
     state.filename = fixture.id.includes('html') ? 'error.html' : 'ratings.csv';
     state.text = fixture.csv;
+    state.treatDateRatedAsWatchedDate = fixture.options?.treatDateRatedAsWatchedDate === true;
     runTransform('fixture');
     render();
   }));
@@ -176,8 +182,8 @@ function reportHtml(r) {
       <div><dt>Code</dt><dd>${escapeHtml(r.code)}</dd></div>
       <div><dt>Rows</dt><dd>${r.rowCount ?? 0}</dd></div>
       <div><dt>Warnings</dt><dd>${r.warnings?.length ?? 0}</dd></div>
-      <div><dt>Data loss</dt><dd>${r.dataLossCases ?? 0}</dd></div>
-      <div><dt>Round trip</dt><dd>${r.roundTrip?.ok ? 'ok' : 'not-ok'}</dd></div>
+      <div><dt>Semantic data loss</dt><dd>${r.semanticDataLoss ?? 0}</dd></div>
+      <div><dt>Structural round trip</dt><dd>${r.structuralRoundTripOk ? 'ok' : 'not-ok'}</dd></div>
     </dl>
     <p><strong>${escapeHtml(r.message)}</strong></p>
     ${r.outputCsv ? `<h3>Output preview</h3><pre id="output-preview">${escapeHtml(r.outputCsv.slice(0, 2000))}</pre>` : ''}

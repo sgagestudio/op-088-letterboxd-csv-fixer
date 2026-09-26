@@ -1,6 +1,6 @@
 export const ALLOWED_EVENTS = new Set([
   'landing_view','tool_started','input_loaded','analysis_started','analysis_completed',
-  'successful_result','warning_result','unsupported_result','download','error','return_visit',
+  'successful_result','warning_result','unsupported_result','download','error',
   'pricing_view','checkout_started','purchase'
 ]);
 
@@ -74,21 +74,12 @@ export function createSupabaseTransport({
 }
 
 export function createAnalytics({
-  storage = globalThis.localStorage,
-  sessionStorage = globalThis.sessionStorage,
   now = () => new Date().toISOString(),
   uuid = () => globalThis.crypto?.randomUUID?.(),
   transport = null
 } = {}) {
   const events = [];
-  let sessionId;
-  try {
-    const key = 'op088_market_session_id';
-    sessionId = sessionStorage?.getItem(key) || safeUuid(uuid);
-    if (!sessionStorage?.getItem(key)) sessionStorage?.setItem(key, sessionId);
-  } catch {
-    sessionId = safeUuid(uuid);
-  }
+  const sessionId = safeUuid(uuid);
 
   function track(name, properties = {}) {
     if (!ALLOWED_EVENTS.has(name)) throw new Error(`analytics_event_not_allowed:${name}`);
@@ -106,11 +97,6 @@ export function createAnalytics({
 
   function markLanding() {
     track('landing_view');
-    try {
-      const key = 'op088_seen_public_landing';
-      if (storage?.getItem(key)) track('return_visit');
-      else storage?.setItem(key, '1');
-    } catch {}
   }
 
   return { track, markLanding, events, sessionId };
